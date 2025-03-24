@@ -1,0 +1,131 @@
+import paramiko
+import getpass
+import time
+import datetime
+
+def ssh_cisco_device(ip, username, password, enable_password, is_tacacs):
+    """
+    Connect to a Cisco device via SSH, handle TACACS+ authentication if needed,
+    execute commands, and save sanitized output.
+    """
+    try:
+        # Establish SSH connection
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+        # TACACS+ authentication may require a different approach
+        if is_tacacs:
+            print("Logging in with TACACS+ (Username + Passcode)")
+            ssh.connect(ip, username=username, password=password, look_for_keys=False, allow_agent=False)
+        else:
+            print("Logging in with standard SSH authentication")
+            ssh.connect(ip, username=username, password=password, look_for_keys=False, allow_agent=False)
+
+        print(f"Successfully connected to {ip}")
+        
+        # Start interactive shell
+        shell = ssh.invoke_shell()
+        shell.settimeout(5)
+
+        # Wait for initial prompt
+        time.sleep(1)
+        output = receive_output(shell)
+
+        # Enter enable mode if needed
+        shell.send("enable\n")
+        time.sleep(1)
+        output += receive_output(shell)
+
+        # Send enable password (if required)
+        if enable_password:
+            shell.send(enable_password + "\n")
+            time.sleep(1)
+            output += receive_output(shell)
+
+        # Disable pagination
+        shell.send("terminal length 0\n")
+        time.sleep(1)
+        output += receive_output(shell)
+
+        # Commands to run
+        commands = [
+            "show ip interface brief",
+            "show sdwan bfd sessions",
+            "show vrrp brief",
+            "show cdp neighbor",
+            "show lldp neighbor"
+            
+        ]
+
+        for command in commands:
+            print(f"Executing command: {command}")
+            shell.send(command + "\n")
+            time.sleep(3)
+            output += receive_output(shell)
+
+        # Exit the session cleanly
+        shell.send("exit\n")
+        time.sleep(1)
+        output += receive_output(shell)
+
+        # Sanitize output
+        sanitized_output = sanitize_output(output, password, enable_password)
+
+        # Save sanitized output
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{ip}_output_{timestamp}.txt"
+        with open(filename, "w") as file:
+            file.write(sanitized_output)
+
+        print(f"Output saved to {filename}")
+
+        # Close SSH session
+        ssh.close()
+        print("SSH session closed")
+        return True
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return False
+
+def receive_output(shell):
+    """Helper function to receive all available output"""
+    output = ""
+    time.sleep(1)
+    
+    while shell.recv_ready():
+        chunk = shell.recv(65535).decode("utf-8", errors="ignore")
+        output += chunk
+        time.sleep(0.5)
+    
+    return output
+
+def sanitize_output(output, password, enable_password):
+    """Sanitize output by replacing passwords with 'XXXXX'"""
+    if password:
+        output = output.replace(password, "XXXXX")
+    if enable_password:
+        output = output.replace(enable_password, "XXXXX")
+    return output
+
+if __name__ == "__main__":
+    print("Cisco SSH Login Tool")
+    print("====================")
+
+    ip = input("Enter Cisco Device IP: ")
+    is_tacacs = input("Is this device using TACACS+ authentication? (yes/no): ").strip().lower() == "yes"
+
+    username = input("Enter Username: ")
+    if is_tacacs:
+        password = getpass.getpass("Enter Passcode (PIN + RSA Key): ")
+        enable_password = None  # Some TACACS+ setups may not need an enable password
+    else:
+        password = getpass.getpass("Enter SSH Password: ")
+        enable_password = getpass.getpass("Enter Enable Password (if required): ")
+
+    success = ssh_cisco_device(ip, username, password, enable_password, is_tacacs)
+
+    if success:
+        print("Script completed successfully.")
+    else:
+        print("Script encountered errors.")
