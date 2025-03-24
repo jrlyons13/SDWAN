@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""
+Cisco Router IP Extractor and Ping Launcher
+
+This script extracts IP addresses from router output files,
+filters for interfaces that are up, and launches continuous 
+ping windows for each IP on an Ubuntu system.
+"""
+
+import os
+import re
+import glob
+import subprocess
+import argparse
+from datetime import datetime
+
+def extract_up_ips(filename):
+    """
+    Extract IP addresses from interfaces that are up from router output files.
+    Looks for 'show ip interface brief' output patterns.
+    """
+    up_ips = []
+    
+    try:
+        with open(filename, 'r') as file:
+            content = file.read()
+            
+            # Find the section containing 'show ip interface brief' output
+            # This regex pattern looks for the command and then captures everything until the next command prompt
+            sections = re.split(r'#[\s\S]*?show ip interface brief[\s\S]*?\n', content)
+            
+            if len(sections) > 1:
+                interface_section = sections[1]
+                
+                # Different regex patterns to match interface output from various Cisco router types/OS
+                patterns = [
+                    # Standard pattern: Interface IP-Address OK? Method Status Protocol
+                    r'(\S+)\s+(\d+\.\d+\.\d+\.\d+)\s+\S+\s+\S+\s+(up|UP)\s+(up|UP)',
+                    
+                    # Alternative pattern with different spacing
+                    r'(\S+)\s+(\d+\.\d+\.\d+\.\d+)(?:/\d+)?\s+\S+\s+\S+\s+(up|UP)\s+(up|UP)',
+                    
+                    # More permissive pattern for different output formats
+                    r'(\S+)\s+(\d+\.\d+\.\d+\.\d+)(?:/\d+)?\s+(?:\S+\s+){0,3}(up|UP)'
+                ]
+                
+                for pattern in patterns:
+                    matches = re.findall(pattern, interface_section, re.MULTILINE)
+                    for match in matches:
+                        interface_name = match[0]
+                        ip_address = match[1]
+                        
+                        # Skip unassigned or special addresses
+                        if ip_address == "unassigned" or ip_address == "0.0.0.0":
+                            continue
+                            
+                        # Skip loopback addresses if they're not needed
+                        if ip_address.startswith('127.'):
+                            continue
+                            
+                        up_ips.append((interface_name, ip_address))
+                
+                print(f"Found {len(up_ips)} up interfaces with valid IPs in {filename}")
+            else:
+                print(f"Could not find 'show ip interface brief' output in {filename}")
+    
+    except Exception as e:
+        print(f"Error processing file {filename}: {e}")
+    
+    return up_ips
+
+def launch_ping_windows(ip_list):
+    """
+    Launch a separate terminal window with continuous ping for each IP.
+    Uses gnome-terminal for Ubuntu systems.
+    """
+    # Check if we're running on a system with gnome-terminal
+    if os.system("which gnome-terminal > /dev/null") != 0:
+        print("gnome-terminal not found. This script requires Ubuntu with GNOME.")
+        return False
+        
+    # Create ping commands for each IP
+    for interface, ip in ip_list:
+        # Create descriptive window title
+        title = f"Ping {ip} ({interface})"
+        
+        # Command to run continuous ping
+        ping_cmd = f"ping -i 1 {ip}"
+        
+        # Launch gnome-terminal with the ping command
+        subprocess.Popen([
+            "gnome-terminal", 
+            "--title", title,
+            "--", "bash", "-c", f"{ping_cmd}; echo 'Press Enter to close'; read"
+        ])
+        
+        print(f"Launched ping window for {ip} ({interface})")
+    
+    return True
+
+def main():
+    parser = argparse.ArgumentParser(description='Extract up IPs from Cisco router output and launch ping windows')
+    parser.add_argument('-f', '--file', help='Specific router output file to process')
+    parser.add_argument('-l', '--latest', action='store_true', help='Use the most recent router output file')
+    parser.add_argument('-a', '--all', action='store_true', help='Process all router output files')
+    
+    args = parser.parse_args()
+    
+    # Get the router output files
+    files_to_process = []
+    
+    if args.file:
+        if os.path.exists(args.file):
+            files_to_process.append(args.file)
+        else:
+            print(f"File not found: {args.file}")
+            return
+    elif args.latest:
+        # Find the most recent router output file
+        output_files = glob.glob("*_output_*.txt")
+        if output_files:
+            latest_file = max(output_files, key=os.path.getmtime)
+            files_to_process.append(latest_file)
+            print(f"Using most recent output file: {latest_file}")
+        else:
+            print("No router output files found")
+            return
+    elif args.all:
+        # Process all router output files
+        files_to_process = glob.glob("*_output_*.txt")
+        if not files_to_process:
+            print("No router output files found")
+            return
+    else:
+        # If no args, list files for user to choose
+        output_files = glob.glob("*_output_*.txt")
+        if not output_files:
+            print("No router output files found")
+            return
+            
+        print("Available router output files:")
+        for i, file in enumerate(output_files, 1):
+            modified_time = datetime.fromtimestamp(os.path.getmtime(file))
+            print(f"{i}. {file} (modified: {modified_time})")
+            
+        try:
+            choice = int(input("Enter file number to process (or 0 to cancel): "))
+            if choice == 0:
+                return
+            if 1 <= choice <= len(output_files):
+                files_to_process.append(output_files[choice-1])
+            else:
+                print("Invalid choice")
+                return
+        except ValueError:
+            print("Invalid input")
+            return
+    
+    # Process files and collect up IPs
+    all_up_ips = []
+    
+    for file in files_to_process:
+        ips = extract_up_ips(file)
+        all_up_ips.extend(ips)
+    
+    if not all_up_ips:
+        print("No UP interfaces with valid IPs found")
+        return
+    
+    # Show results and confirm before launching ping windows
+    print("\nFound the following UP interfaces with valid IPs:")
+    for i, (interface, ip) in enumerate(all_up_ips, 1):
+        print(f"{i}. Interface: {interface}, IP: {ip}")
+    
+    # Allow user to select specific IPs to ping
+    print("\nSelect IPs to ping:")
+    print("1. Ping all IPs")
+    print("2. Select specific IPs")
+    print("3. Cancel")
+    
+    try:
+        choice = int(input("Enter your choice: "))
+        
+        if choice == 1:
+            # Ping all IPs
+            ips_to_ping = all_up_ips
+        elif choice == 2:
+            # Select specific IPs
+            selected_indices = input("Enter the numbers of the IPs to ping (comma-separated): ")
+            indices = [int(idx.strip()) for idx in selected_indices.split(",")]
+            
+            ips_to_ping = []
+            for idx in indices:
+                if 1 <= idx <= len(all_up_ips):
+                    ips_to_ping.append(all_up_ips[idx-1])
+                else:
+                    print(f"Invalid index: {idx}")
+        elif choice == 3:
+            # Cancel
+            return
+        else:
+            print("Invalid choice")
+            return
+            
+        if ips_to_ping:
+            # Launch ping windows
+            launch_ping_windows(ips_to_ping)
+        else:
+            print("No IPs selected for ping")
+            
+    except ValueError:
+        print("Invalid input")
+        return
+
+if __name__ == "__main__":
+    main()
