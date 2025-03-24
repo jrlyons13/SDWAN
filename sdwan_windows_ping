@@ -78,21 +78,25 @@ def launch_ping_windows(ip_list):
     for interface, ip in ip_list:
         # Create descriptive window title
         title = f"Ping {ip} ({interface})"
-        
+
         # Command to run continuous ping
         # In Windows, -t is used for continuous ping
         ping_cmd = f"ping -t {ip}"
-        
+
         # Launch a new cmd window with the ping command
         # /k keeps the window open after the command finishes
         subprocess.Popen([
-            "cmd.exe", 
-            "/c", 
-            f"start \"{title}\" cmd.exe /k {ping_cmd}"
+            "cmd.exe",
+            "/c",
+            "start",
+            title,
+            "cmd.exe",
+            "/k",
+            ping_cmd
         ], shell=True)
-        
+
         print(f"Launched ping window for {ip} ({interface})")
-    
+
     return True
 
 def main():
